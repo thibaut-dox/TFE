@@ -1,20 +1,14 @@
-# For going through files folder and be able to exit code without going through all of it
 import os
 import numpy as np
 import time
 import random
 import PIL
-from PIL import Image, ImageDraw
+from PIL import Image
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib import colormaps
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
-
-import cv2
 from tqdm import tqdm
-from torchviz import make_dot
-
-# CNN and data related
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -28,12 +22,14 @@ from torchvision.utils import save_image
 from torch.utils.data import Dataset
 from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
-#writer = SummaryWriter("runs/tfe")
-#writer_train = SummaryWriter("runs/train")
-#writer_val = SummaryWriter("runs/val")
+
+# For the tensorboard
+writer = SummaryWriter("runs/tfe")
+writer_train = SummaryWriter("runs/train")
+writer_val = SummaryWriter("runs/val")
 
 
-
+# Implementation of the CNN
 class MyCNN(nn.Module):
     def __init__(self, nbr_labels, nbr_channels, image_size):
         super(MyCNN, self).__init__()
@@ -43,7 +39,7 @@ class MyCNN(nn.Module):
         self.bn2 = nn.BatchNorm2d(nbr_channels*2)
         self.conv3 = nn.Conv2d(nbr_channels*2, nbr_channels*4, kernel_size=3, stride=1, padding=1)
         self.bn3 = nn.BatchNorm2d(nbr_channels*4)
-        self.conv4 = nn.Conv2d(nbr_channels*4, nbr_channels*8, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(nbr_channels*4,  nbr_channels*8, kernel_size=3, stride=1, padding=1)
         self.bn4 = nn.BatchNorm2d(nbr_channels*8)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.fc1 = nn.Linear(int(nbr_channels*8 * (image_size/16) * (image_size/16)), 64)
@@ -79,6 +75,8 @@ class MyCNN(nn.Module):
         x = self.fc2(x)
         return x
 
+
+# GradCAM implementation for the heatmaps
 class GradCAM:
     def __init__(self, model, target_layer):
         self.model = model
@@ -93,6 +91,8 @@ class GradCAM:
         with torch.enable_grad():
             return self.model(x)
 
+
+# To concatenate the separate dataset when we are not doing separated testing
 class AugmentedDataset(Dataset):
     def __init__(self, base_dataset, augmented_images, augmented_labels):
         self.base_dataset = base_dataset
@@ -110,6 +110,7 @@ class AugmentedDataset(Dataset):
         return len(self.base_dataset) + len(self.augmented_images)
 
 
+# Calculating class distribution
 def calculate_class_distribution(dataset):
     print("Calculating class distribution")
     class_counts = {}
@@ -121,33 +122,25 @@ def calculate_class_distribution(dataset):
 
     return class_counts
 
-# Preprocess from path : resize, grayscale and normalize
-# Save the tensors to path2
-def imageTensors(path_train, path_save, path_test, test, separated, image_size, centercrop):
+
+# Creating and rpeprocess datset : resize, centercrop and normalization
+def imageTensors(path_train, path_save, path_test, separated, image_size, centercrop):
 
     # Conditionally modify the transformation pipeline
     if centercrop:
         transform = transforms.Compose([
-            # transforms.Grayscale(num_output_channels=3), # Assure that it is in grayscale
             transforms.CenterCrop(940),
             transforms.Resize((image_size, image_size), antialias=True),
-            transforms.ToTensor()  # Convert images to tensors
+            transforms.ToTensor()
         ])
     else:
         transform = transforms.Compose([
-            # transforms.Grayscale(num_output_channels=3), # Assure that it is in grayscale
             transforms.Resize((image_size, image_size), antialias=True),
-            transforms.ToTensor()  # Convert images to tensors
+            transforms.ToTensor()
         ])
-
 
     imageDS = ImageFolder(path_train, transform=transform)
     testDS = ImageFolder(path_test, transform=transform)
-    # A subset of the dataset to test the code
-    if test:
-        # Define the size of the subset
-        subset_size = 500
-        imageDS, restDS = torch.utils.data.random_split(imageDS, [subset_size, len(imageDS)-subset_size])
 
     if separated:
         train_prop = 0.8
@@ -206,7 +199,7 @@ def imageTensors(path_train, path_save, path_test, test, separated, image_size, 
     torch.save(std, path_save + "/std.pt")
 
 
-# Train the model and stop when it start to overfit
+# Train the model and early stopping after 3 epoch where validation loss does not go lower as the lowest so far
 def tuneHyperparam(trainDS, valDS, lr, batch_size, mean, std, image_size):
 
     normalize = transforms.Normalize(mean, std)
@@ -216,32 +209,29 @@ def tuneHyperparam(trainDS, valDS, lr, batch_size, mean, std, image_size):
     train_loader = torch.utils.data.DataLoader(trainDS, batch_size=batch_size, shuffle=True)
     val_loader = torch.utils.data.DataLoader(valDS, batch_size=batch_size, shuffle=True)
 
-
     # Just to show an example of the data in the tensorboard
     examples = iter(train_loader)
     example_images, example_labels = next(examples)
     img_grid = make_grid(example_images)
-    #writer.add_image('Example of the images', img_grid)
-    #writer.close()
+    writer.add_image('Example of the images', img_grid)
+    writer.close()
     model = MyCNN(nbr_labels, nbr_channels, image_size)
     model.to(device)
 
-    # Assuming you have a dataset 'my_dataset'
+    # Calculating class distribution for the weighted cross entropy loss
     class_distribution = calculate_class_distribution(train_dataset)
     class_frequencies = torch.zeros(len(class_distribution))
     for label, count in class_distribution.items():
         class_frequencies[label] = count
-
     total_samples = class_frequencies.sum().item()
-
     class_weights = [total_samples / (len(class_frequencies) * freq) for freq in class_frequencies]
 
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights).to(device))
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    last_running_loss = float('inf')
-    last_evalloss = float('inf')
+    smallest_evallos = float('inf')
     start_time = time.time()
+    stop = 0
     for epoch in tqdm(range(num_epochs), desc="Epochs"):
         running_loss = 0.0
         model.train()
@@ -255,8 +245,7 @@ def tuneHyperparam(trainDS, valDS, lr, batch_size, mean, std, image_size):
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-            #writer_train.add_scalar('Training loss vs Validation loss', loss.item(), epoch * len(train_loader) + i)
-            writer_runs.add_scalar('Training loss vs Validation loss', loss.item(), epoch * len(train_loader) + i)
+            writer_train.add_scalar('Training loss vs Validation loss', loss.item(), epoch * len(train_loader) + i)
 
         model.eval()
         with torch.no_grad():
@@ -267,46 +256,52 @@ def tuneHyperparam(trainDS, valDS, lr, batch_size, mean, std, image_size):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
                 evalloss += loss.item()
-            #writer_val.add_scalar('Training loss vs Validation loss', evalloss/len(val_loader), epoch*len(train_loader))
-            writer_runs.add_scalar('Training loss vs Validation loss', evalloss/len(val_loader), epoch*len(train_loader))
+            writer_val.add_scalar('Training loss vs Validation loss', evalloss/len(val_loader), epoch*len(train_loader))
             print("Training loss : ", running_loss, " and Validation loss : ", evalloss)
-        if last_evalloss < evalloss and last_running_loss > running_loss:
-            print("Finished training before last epoch")
-            #break
+        if smallest_evallos < evalloss:
+            stop += 1
         else:
-            last_evalloss = evalloss
-            last_running_loss = running_loss
+            smallest_evallos = evalloss
+            stop = 0
+        if stop == 3:
+            print("3 consecutive times validation loss growing")
+            break
 
     end_time = time.time()
     total_time = end_time - start_time
     print(f"Total training time: {total_time:.2f} seconds (training and validation)")
-    #writer_train.close()
-    #writer_val.close()
-    writer_runs.close()
+    writer_train.close()
+    writer_val.close()
+
     return model
 
 
+# Hook for taking gradients for the heatmaps
 def backward_hook1(module, grad_input, grad_output):
     global gradients  # refers to the variable in the global scope
     gradients = grad_output
 
 
+# Hook for taking the ouput for the heatmaps
 def forward_hook1(module, args, output):
     global activations
     activations = output
 
 
+# Global variable for the hooks
 gradients = None
 activations = None
 
 
+# Create the heatmaps with specifiq target class (0=bugged, 1=clean,, 2=defect)
 def heatmap(model, image, save_dir, nbr_heat, target_class):
 
     backward_hook = model.conv4.register_full_backward_hook(backward_hook1, prepend=False)
     forward_hook = model.conv4.register_forward_hook(forward_hook1, prepend=False)
     pred = model(image)
-    if pred[2] == torch.max(pred):
-        pred.backward()
+
+    if pred[0][target_class] == torch.max(pred):
+        pred[0][target_class].backward()
         pooled_gradients = torch.mean(gradients[0], dim=[0, 2, 3])
         # weight the channels by corresponding gradients
         for i in range(activations.size()[1]):
@@ -351,6 +346,7 @@ def misclassified(predictions, labels, images, nbr_mis, save_dir):
             nbr_mis += 1
 
 
+# Calculating the confusion matrix and other metric of the test set
 def calculate_metrics(predictions, labels, nbr_labels, save_dir):
     # Calculate confusion matrix
     conf_matrix = confusion_matrix(labels.cpu().numpy(), predictions.cpu().numpy(), labels=list(range(nbr_labels)))
@@ -371,6 +367,7 @@ def calculate_metrics(predictions, labels, nbr_labels, save_dir):
     print(report)
 
 
+# To draw the roc curves of the test set
 def calculate_roc(predictions, labels, nbr_labels, save_dir):
     fpr = {}
     tpr = {}
@@ -403,9 +400,11 @@ def testModel(model, testDS, mean, std, nbr_labels):
     normalize = transforms.Normalize(mean, std)
     testDS.transform = normalize
 
+    # To have a look on the misclassified images
     save_dir = 'C:/Users/thibo/Documents/T-bow/Unif/master2/TFE/Misclassified_images'
     os.makedirs(save_dir, exist_ok=True)
 
+    # Where to save the heatmaps
     heatmap_dir = 'C:/Users/thibo/Documents/T-bow/Unif/master2/TFE/Heatmap'
     os.makedirs(heatmap_dir, exist_ok=True)
 
@@ -413,20 +412,20 @@ def testModel(model, testDS, mean, std, nbr_labels):
     nbr_heat = 0
     model.eval()
 
+    # Creating the heatmaps, with the target score of the defect prediction (0=bugged, 1=clean,, 2=defect)
     for images, labels in tqdm(test_loader, desc= "Heatmaps"):
         images = images.to(device)
         for image, label in zip(images, labels):
             if label == 2:
-                heatmap(model, image.unsqueeze(0), heatmap_dir, nbr_heat)
+                heatmap(model, image.unsqueeze(0), heatmap_dir, nbr_heat, 2)
                 nbr_heat += 1
                 plt.close()
     all_true_labels = []
     all_predicted_labels = []
     all_predicted_probs = []
 
+    # Calculating the metrics
     with torch.no_grad():
-        correct_count = 0
-        total_count = 0
         nbr_mis = 0
         for images, labels in tqdm(test_loader, desc="Testing"):
             images = images.to(device)
@@ -435,10 +434,6 @@ def testModel(model, testDS, mean, std, nbr_labels):
             proba_prediction = model(images)
             probabilities, predictions = torch.max(proba_prediction, dim=1)
 
-            # Overall accuracy
-            correct_count += torch.sum(predictions == labels).item()
-            total_count += len(labels)
-
             all_true_labels.append(labels)
             all_predicted_labels.append(predictions)
             all_predicted_probs.append(proba_prediction)
@@ -446,10 +441,6 @@ def testModel(model, testDS, mean, std, nbr_labels):
             # Save the misclassified image
             misclassified(predictions, labels, images, nbr_mis, save_dir)
             nbr_mis += len(predictions)
-
-    # Calculate per-class accuracy
-    accuracy = correct_count/total_count
-    print("Total Accuracy:", accuracy)
 
     # Combine predictions and labels for the entire dataset
     all_true_labels = torch.cat(all_true_labels)
@@ -483,65 +474,56 @@ def count_labels(folder_path):
     return folder_count
 
 
+# Give prediciton of the model for a unique image
+def prediction(model, image):
+    image = image.to(device)
+    prediciton = model(image.unsqueeze())
+    _, pred = torch.max(prediciton, dim=1)
+    if pred.item() == 0:
+        print("The model predict that the image is Bugged")
+    elif pred.item() == 1:
+        print("The model predict that the image is Clean")
+    elif pred.item() == 2:
+        print("The model predict that the image is Defect")
+
+
 if __name__ == '__main__':
 
-    # TEST
-    test = False
-    if test:
-        print("This is a test, we use a smaller dataset")
-    else:
-        print("This is with all the data")
-
-    separated = False
-    if separated:
-        print("Image from test set are forms that the CNN never saw")
-
-    # Debug
+    # To know if we work on GPU or not
     disp = True
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if disp:
         print('The device used is : ' + str(device))
 
-    # To go search the images at the right file, and save the dataset of the processed images on another file,
-    # to retrieve it faster
+    # Use the special dataset to simulate reaction of the CNN with data with new form
+    separated = False
+    if separated:
+        print("Image from test set are forms that the CNN never saw")
+
+    # HERE : need to adapt the path correctly with they will be stored
+    # Path to the stored images and where to save the preprocess dataset, for faster computing during test of the code
     directoryToProcess = "C:/Users/thibo/Documents/T-bow/Unif/master2/TFE/PicturesSORTED"
     pathStored = "C:/Users/thibo/Documents/T-bow/Unif/master2/TFE/ProcessedJob"
 
-    # If we use test images with forms never saw by the cnn
+    # If we use the "separated" dataset
     path_test = "C:/Users/thibo/Documents/T-bow/Unif/master2/TFE/Test_images"
-    """
-    if is_empty_folder(pathStored):
-        print("Creating new dataset")
-        imageTensors(directoryToProcess, pathStored, path_test, test, separated, image_size, centercrop)
-        print("New dataset created")
-    else:
-        print("WARNING : Took precedent dataset")
-    """
-    """
-    if not os.path.exists("model.pt"):
-        print("Creating model")
-        trained_model = tuneHyperparam(train_dataset, val_dataset, lr, batch_size, mean, std)
-        trained_model.to(device)
-        torch.save(trained_model.state_dict(), 'model.pt')
-    else:
-        trained_model = MyCNN(nbr_labels, nbr_channels)
-        trained_model.to(device)
-        trained_model.load_state_dict(torch.load('model.pt'))
-    """
-    num_random = 10
-    num_epochs = 15
-    lr = 0.001
-    image_size = 128
-    nbr_channels = 8
-    batch_size = 100
-    centercrop = False
-    log_dir = 'runs/'
 
-    print(f"Training with lr={lr}, image_size={image_size}, nbr_channels={nbr_channels}, batch_size={batch_size}, centercrop={centercrop}")
+    # Parameters
+    num_epochs = 20
+    lr = 0.001
+    image_size = 256
+    nbr_channels = 16
+    batch_size = 100
+    centercrop = True
+
+    # To not recreate dataset when we do test on the model
     if is_empty_folder(pathStored):
+        imageTensors(directoryToProcess, pathStored, path_test, separated, image_size, centercrop)
+    else:
         print("Took precedent dataset")
-        imageTensors(directoryToProcess, pathStored, path_test, test, separated, image_size, centercrop)
+
+    # Retrieving the dataset
     train_dataset = torch.load(pathStored + "/trainDS.pt")
     val_dataset = torch.load(pathStored + "/valDS.pt")
     test_dataset = torch.load(pathStored + "/testDS.pt")
@@ -549,18 +531,15 @@ if __name__ == '__main__':
     std = torch.load(pathStored + "/std.pt")
     nbr_labels = count_labels(directoryToProcess)
 
-    # Create a new directory for this run's logs
-    log_dir_run = os.path.join(log_dir, f'run_0')
-    writer_runs = SummaryWriter(log_dir_run)
-    # Log hyperparameters for this run
-    writer_runs.add_scalar('Hyperparameters/lr', lr, 0)
-    writer_runs.add_scalar('Hyperparameters/image_size', image_size, 0)
-    writer_runs.add_scalar('Hyperparameters/nbr_channels', nbr_channels, 0)
-    writer_runs.add_scalar('Hyperparameters/batch_size', batch_size, 0)
-    trained_model = tuneHyperparam(train_dataset, val_dataset, lr, batch_size, mean, std, image_size)
-    trained_model.to(device)
+    # To not retrain a model when we do test on the model
+    if not os.path.exists("model.pt"):
+        trained_model = tuneHyperparam(train_dataset, val_dataset, lr, batch_size, mean, std, image_size)
+        trained_model.to(device)
+        torch.save(trained_model.state_dict(), 'model.pt')
+    else:
+        trained_model = MyCNN(nbr_labels, nbr_channels, image_size)
+        trained_model.to(device)
+        trained_model.load_state_dict(torch.load('model.pt'))
+
     testModel(trained_model, test_dataset, mean, std, nbr_labels)
-
-
-
 
