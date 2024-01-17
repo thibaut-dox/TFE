@@ -1,3 +1,5 @@
+# All the metrics used for evaluating how well the model works
+
 from torchvision.transforms.functional import to_pil_image
 from torchvision.utils import save_image
 import seaborn as sns
@@ -8,8 +10,15 @@ from PIL import Image
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import os
+import wandb
+
+
+# Define global variables for hooks
+gradients = None
+activations = None
 
 # Hook for taking gradients for the heatmaps
 def backward_hook1(module, grad_input, grad_output):
@@ -23,20 +32,33 @@ def forward_hook1(module, args, output):
     activations = output
 
 
-# Global variable for the hooks
-gradients = None
-activations = None
+def heatmap(model, image, save_dir, nbr_heat, nn_choice):
+    global activations
+    global gradients
+
+    if nn_choice == "resnet":
+        last_conv_layer = model.layer4[-1].conv2
+    elif nn_choice == "mycnn":
+        last_conv_layer = model.conv4
+    elif nn_choice == "vgg":
+        last_conv_layer = model.features[-1]
+    elif nn_choice == "inception":
+        last_conv_layer = model.Mixed_7a
+
+        # Save the current requires_grad state for each parameter
+    original_requires_grad = [param.requires_grad for param in model.parameters()]
+
+    # Set requires_grad to True for all parameters
+    for param in model.parameters():
+        param.requires_grad = True
 
 
-# Create the heatmaps with specifiq target class (0=bugged, 1=clean,, 2=defect)
-def heatmap(model, image, save_dir, nbr_heat, target_class):
-
-    backward_hook = model.conv4.register_full_backward_hook(backward_hook1, prepend=False)
-    forward_hook = model.conv4.register_forward_hook(forward_hook1, prepend=False)
+    backward_hook = last_conv_layer.register_full_backward_hook(backward_hook1, prepend=False)
+    forward_hook = last_conv_layer.register_forward_hook(forward_hook1, prepend=False)
     pred = model(image)
 
-    if pred[0][target_class] == torch.max(pred):
-        pred[0][target_class].backward()
+    if pred > 0.5:
+        pred.backward()
         pooled_gradients = torch.mean(gradients[0], dim=[0, 2, 3])
         # weight the channels by corresponding gradients
         for i in range(activations.size()[1]):
@@ -53,6 +75,11 @@ def heatmap(model, image, save_dir, nbr_heat, target_class):
         cmap = colormaps['jet']
         overlay = (255 * cmap(np.asarray(overlay) ** 2)[:, :, :3]).astype(np.uint8)
 
+        # Restore the original requires_grad state for each parameter
+        for param, requires_grad in zip(model.parameters(), original_requires_grad):
+            param.requires_grad = requires_grad
+
+        matplotlib.use('Agg')
         # Create a figure and plot the first image
         fig, ax = plt.subplots()
         ax.axis('off')  # removes the axis markers
@@ -80,42 +107,36 @@ def misclassified(predictions, labels, images, nbr_mis, save_dir):
             save_image(images[i], image_path)
             nbr_mis += 1
 
-
-# Calculating the confusion matrix and other metric of the test set
-def calculate_metrics(predictions, labels, nbr_labels, save_dir):
+def calculate_metrics(predictions, labels, save_dir):
     # Calculate confusion matrix
-    conf_matrix = confusion_matrix(labels.cpu().numpy(), predictions.cpu().numpy(), labels=list(range(nbr_labels)))
+    conf_matrix = confusion_matrix(labels.cpu().numpy(), predictions.cpu().numpy())
 
     # Save conf matrix
-    class_labels = ['Bugged', 'Clean', 'Defect']
+    # CHANGER NOM EN FONCTION IF BUGGED OR NOT, DEFECT OR NOT
+    class_labels = ['Negative', 'Positive']
     plt.figure(figsize=(8, 6))
     sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues", xticklabels=class_labels, yticklabels=class_labels)
     plt.xlabel('Predicted Labels')
     plt.ylabel('True Labels')
     plt.title('Confusion Matrix')
-    conf_mat_path = os.path.join(save_dir, f"Confusion matrix.jpg")
+    conf_mat_path = os.path.join(save_dir, "Confusion_matrix.jpg")
+    wandb.log({"confusion_matrix": wandb.Image(plt)})
     plt.savefig(conf_mat_path)
-
+    plt.close()
 
     # Calculate classification report
-    report = classification_report(labels.cpu().numpy(), predictions.cpu().numpy(), labels=list(range(nbr_labels)), zero_division=0)
+    report = classification_report(labels.cpu().numpy(), predictions.cpu().numpy(), target_names=class_labels, zero_division=0)
     print(report)
 
 
 # To draw the roc curves of the test set
-def calculate_roc(predictions, labels, nbr_labels, save_dir):
-    fpr = {}
-    tpr = {}
-    roc_auc = {}
-
-    for i in range(nbr_labels):
-        fpr[i], tpr[i], _ = roc_curve(labels == i, predictions[:, i])
-        roc_auc[i] = auc(fpr[i], tpr[i])
+def calculate_roc(predictions, labels, save_dir):
+    fpr, tpr, _ = roc_curve(labels, predictions) # = positive = defect
+    roc_auc = auc(fpr, tpr)
 
     plt.figure(figsize=(10, 6))
 
-    for i in range(nbr_labels):
-        plt.plot(fpr[i], tpr[i], lw=2, label=f'Class {i} (AUC = {roc_auc[i]:.2f})')
+    plt.plot(fpr, tpr, lw=2, label=f'Class 1 (AUC = {roc_auc:.2f})')
 
     plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
     plt.xlim([0.0, 1.0])
@@ -126,5 +147,6 @@ def calculate_roc(predictions, labels, nbr_labels, save_dir):
     plt.legend(loc="lower right")
     roc_path = os.path.join(save_dir, f"ARoc curves.jpg")
     plt.savefig(roc_path)
+    wandb.log({"Roc curves": wandb.Image(plt)})
     plt.close()
 

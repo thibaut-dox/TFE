@@ -1,3 +1,5 @@
+# Create the dataset, preprocess it and save it for future uses
+
 import os
 import random
 import torch
@@ -6,14 +8,17 @@ from torch.utils.data import Dataset
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
+import pickle
+
+
 
 # To concatenate train dataset with new images
 class AugmentedDataset(Dataset):
-    def __init__(self, base_dataset, augmented_images, augmented_labels, transform):
+    def __init__(self, base_dataset, augmented_dataset, transform, augmented_transform):
         self.base_dataset = base_dataset
-        self.augmented_images = augmented_images
-        self.augmented_labels = augmented_labels
+        self.augmented_dataset = augmented_dataset
         self.transform = transform
+        self.augmented_transform = augmented_transform
 
     def __getitem__(self, index):
         if index < len(self.base_dataset):
@@ -22,12 +27,12 @@ class AugmentedDataset(Dataset):
             return img, label
         else:
             new_index = index - len(self.base_dataset)
-            img = self.augmented_images[new_index]
-            img = self.transform(img)
-            return img, self.augmented_labels[new_index]
+            img, label = self.augmented_dataset[new_index]
+            img = self.augmented_transform(img)
+            return img, label
 
     def __len__(self):
-        return len(self.base_dataset) + len(self.augmented_images)
+        return len(self.base_dataset) + len(self.augmented_dataset)
 
 
 # To created dataset from all the different jobs
@@ -47,8 +52,25 @@ class CustomDataset(Dataset):
         return img, label
 
 
+# Calculating class distribution
+def calculate_class_distribution(dataset):
+    print("Calculating class distribution")
+    class_counts = {}
+    for _, label in dataset:
+        if label in class_counts:
+            class_counts[label] += 1
+        else:
+            class_counts[label] = 1
+
+    return class_counts
+
+
 # Creating and preprocess datset : resize, centercrop and normalization
-def imageTensors(path_train, path_save, image_size):
+def imageTensors(path_train, path_save, config):
+
+    image_size = config.image_size
+    excluded_job = config.excluded_job
+
 
     transform = transforms.Compose([
         transforms.CenterCrop(940),
@@ -58,14 +80,16 @@ def imageTensors(path_train, path_save, image_size):
 
     # Define the root directory and the job folder to exclude
     root_dir = path_train
-    excluded_job_folder = 'JOB 7'
+    excluded_job_folder = excluded_job
 
     file_list = []
     test_file_list = []
 
+    print("Creating dataset..")
     # Populate the file list for training and validation sets, excluding excluded_job_folder
-    for label, class_name in enumerate(['Bugged', 'Clean', 'Defect']):
+    for label, class_name in enumerate(['Clean', 'Defect']):
         class_path = os.path.join(root_dir, class_name)
+
         for job_folder in os.listdir(class_path):
             if job_folder != excluded_job_folder:
                 job_path = os.path.join(class_path, job_folder)
@@ -74,6 +98,7 @@ def imageTensors(path_train, path_save, image_size):
                         if filename.endswith('.jpg') or filename.endswith('.png'):
                             file_list.append((os.path.join(job_path, filename), label))
             else:
+                # Add files to the test set
                 job_path = os.path.join(class_path, job_folder)
                 if os.path.isdir(job_path):
                     for filename in os.listdir(job_path):
@@ -82,55 +107,76 @@ def imageTensors(path_train, path_save, image_size):
 
     # Split the dataset into training and validation sets
     train_data, val_data = train_test_split(file_list, test_size=0.2, random_state=42)
-
+    print("Dataset separated into train, valid and test")
     # Create datasets
     train_dataset = CustomDataset(train_data, transform=transform)
     val_dataset = CustomDataset(val_data, transform=transform)
     test_dataset = CustomDataset(test_file_list, transform=transform)
 
     # Define a list of possible transformations
-    possible_transforms = [
+    augmentation_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(degrees=10),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0), antialias=True),
-    ]
+    ])
 
+    # At first we were doing transformation on the data then stored it in a dataset, but take to much spaces,
+    # We only apply the transformation when we take the image, just store the path, so that it take less memory
+    # So above, it is not list but already the transform
+    """
     # Define the maximum number of transformations to apply
     max_num_transforms = len(possible_transforms)
+    num_transforms = random.randint(1, max_num_transforms)  # Generate a random number of transformations
+    chosen_transforms = random.sample(possible_transforms, num_transforms)  # Randomly select the transformations
+    augmentation_transform = transforms.Compose(chosen_transforms)
+    """
 
-    trainloader = DataLoader(train_dataset, batch_size=50, shuffle=True)
-
-    # Apply random transformations to each image
-    new_images = []
-    new_labels = []
+    trainloader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    print("Start calculating mean and std")
     images_tensor = []
     for batch, labels in trainloader:
         for img, label in zip(batch, labels):
-            num_transforms = random.randint(1, max_num_transforms)  # Generate a random number of transformations
-            chosen_transforms = random.sample(possible_transforms, num_transforms)  # Randomly select the transformations
-            augmentation_transform = transforms.Compose(chosen_transforms)
             augmented_image = augmentation_transform(img)
             images_tensor.append(img)
             images_tensor.append(augmented_image)
-            new_images.append(augmented_image)
-            new_labels.append(label.item())
     tensor_images = torch.stack(images_tensor, dim=0)
-    print("Final length of the train : ", len(tensor_images))
+    print("Calculation finished. Final length of the train : ", len(tensor_images))
 
     mean = torch.mean(tensor_images, dim=[0, 2, 3])
     std = torch.std(tensor_images, dim=[0, 2, 3])
 
     normalize = transforms.Normalize(mean, std)
-    train_dataset = AugmentedDataset(train_dataset, new_images, new_labels, normalize)
+    augmentation_transform = transforms.Compose([
+        augmentation_transform,
+        normalize
+    ])
 
+    train_dataset = AugmentedDataset(train_dataset, train_dataset, normalize, augmentation_transform)
     new_transform = transforms.Compose([
         transform,
         normalize
     ])
+    #train_dataset.transform = new_transform
     val_dataset.transform = new_transform
     test_dataset.transform = new_transform
+    
 
     torch.save(train_dataset, path_save + "/trainDS.pt")
     torch.save(val_dataset, path_save + "/valDS.pt")
     torch.save(test_dataset, path_save + "/testDS.pt")
+
+
+    # Calculating class distribution for the weighted cross entropy loss
+    class_distribution = calculate_class_distribution(train_dataset)
+    class_frequencies = torch.zeros(len(class_distribution))
+    for label, count in class_distribution.items():
+        class_frequencies[label] = count
+    total_samples = class_frequencies.sum().item()
+    # class_weights = [total_samples / (len(class_frequencies) * freq) for freq in class_frequencies] ofr when more than 2 class
+    # Since we use it for binary, we changed
+    class_weights = torch.tensor([total_samples / class_frequencies[0], total_samples / class_frequencies[1]])
+
+    with open(path_save + "/weight.pkl", "wb") as file:
+        pickle.dump(class_weights, file)
+    print("Dataset and distribution calculated")
