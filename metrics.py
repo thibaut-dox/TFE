@@ -31,7 +31,7 @@ def forward_hook1(module, args, output):
     global activations
     activations = output
 
-
+# Function to create the heatmaps
 def heatmap(model, image, save_dir, nbr_heat, nn_choice):
     global activations
     global gradients
@@ -107,6 +107,7 @@ def misclassified(predictions, labels, images, nbr_mis, save_dir):
             save_image(images[i], image_path)
             nbr_mis += 1
 
+# Function to calculate all the metrics and confusion matrix
 def calculate_metrics(predictions, labels, save_dir):
     # Calculate confusion matrix
     conf_matrix = confusion_matrix(labels.cpu().numpy(), predictions.cpu().numpy())

@@ -5,7 +5,7 @@ import os
 import matplotlib.pyplot as plt
 import torch
 from training import choose_NN
-import torch.nn as nn
+
 
 from torch.utils.data import DataLoader
 
@@ -14,7 +14,7 @@ from tqdm import tqdm
 from metrics import calculate_metrics, calculate_roc, heatmap, misclassified
 
 # Test the model : produce accuracy, heatmaps, misclassified
-def testModel(model, testDS, config, device, alexnet):
+def testModel(model, testDS, config, device):
 
     batch_size = config.batch_size
 

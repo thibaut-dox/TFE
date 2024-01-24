@@ -1,7 +1,6 @@
 # Create the dataset, preprocess it and save it for future uses
 
 import os
-import random
 import torch
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset
@@ -86,7 +85,7 @@ def imageTensors(path_train, path_save, config):
     test_file_list = []
 
     print("Creating dataset..")
-    # Populate the file list for training and validation sets, excluding excluded_job_folder
+    # Populate the file list for training and validation sets, excluding excluded_job_folder, here for clean and defect images
     for label, class_name in enumerate(['Clean', 'Defect']):
         class_path = os.path.join(root_dir, class_name)
 
@@ -113,24 +112,14 @@ def imageTensors(path_train, path_save, config):
     val_dataset = CustomDataset(val_data, transform=transform)
     test_dataset = CustomDataset(test_file_list, transform=transform)
 
-    # Define a list of possible transformations
+    # Define a list of all the transformations (choosing at random not possible if we want to use them to normalize
+    # and still store only the path to the image
     augmentation_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(degrees=10),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0), antialias=True),
     ])
-
-    # At first we were doing transformation on the data then stored it in a dataset, but take to much spaces,
-    # We only apply the transformation when we take the image, just store the path, so that it take less memory
-    # So above, it is not list but already the transform
-    """
-    # Define the maximum number of transformations to apply
-    max_num_transforms = len(possible_transforms)
-    num_transforms = random.randint(1, max_num_transforms)  # Generate a random number of transformations
-    chosen_transforms = random.sample(possible_transforms, num_transforms)  # Randomly select the transformations
-    augmentation_transform = transforms.Compose(chosen_transforms)
-    """
 
     trainloader = DataLoader(train_dataset, batch_size=256, shuffle=True)
     print("Start calculating mean and std")
@@ -157,7 +146,7 @@ def imageTensors(path_train, path_save, config):
         transform,
         normalize
     ])
-    #train_dataset.transform = new_transform
+
     val_dataset.transform = new_transform
     test_dataset.transform = new_transform
     
@@ -173,8 +162,6 @@ def imageTensors(path_train, path_save, config):
     for label, count in class_distribution.items():
         class_frequencies[label] = count
     total_samples = class_frequencies.sum().item()
-    # class_weights = [total_samples / (len(class_frequencies) * freq) for freq in class_frequencies] ofr when more than 2 class
-    # Since we use it for binary, we changed
     class_weights = torch.tensor([total_samples / class_frequencies[0], total_samples / class_frequencies[1]])
 
     with open(path_save + "/weight.pkl", "wb") as file:

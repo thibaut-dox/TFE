@@ -3,11 +3,10 @@ import torch
 import pickle
 
 import wandb
-import torch.nn as nn
-import torchvision
 
-from dataset_creation import imageTensors, calculate_class_distribution
-from training import MyCNN, tuneHyperparam, choose_NN
+
+from dataset_creation import imageTensors
+from training import tuneHyperparam, choose_NN
 from testing import testModel
 
 
@@ -28,6 +27,7 @@ def prediction(model, image):
     elif pred.item() == 2:
         print("The model predict that the image is Defect")
 
+# Model pipeline for the sweeps
 def model_pipeline():
 
     with wandb.init():
@@ -45,8 +45,7 @@ def model_pipeline():
         with open(pathStored + "/weight.pkl", "rb") as file:
             class_weights = pickle.load(file)
         print("Dataset loaded")
-        #trained_model = tuneHyperparam(train_dataset, val_dataset, device, class_weights, config)
-        #trained_model.to(device)
+
 
 
         if not os.path.exists("model.pt"):
@@ -62,14 +61,14 @@ def model_pipeline():
             trained_model.to(device)
             trained_model.load_state_dict(torch.load('model.pt'))
         
-        testModel(trained_model, test_dataset, config, device, alexnet)
+        testModel(trained_model, test_dataset, config, device)
 
 
 
 if __name__ == '__main__':
 
     os.environ["WANDB__SERVICE_WAIT"] = "300"
-    alexnet = False
+
 
     # To know if we work on GPU or not
     disp = True
@@ -94,6 +93,7 @@ if __name__ == '__main__':
         },
     }
 
+    # adapt the sweep to what we want to test
     parameters_dict = {
         'batch_size': {
             'values': [256]
@@ -125,39 +125,4 @@ if __name__ == '__main__':
 
     wandb.agent(sweep_id, model_pipeline, count=1)
 
-    """
-    # Test avec model pré entrainé
-
-
-    # Retrieving the dataset
-    train_dataset = torch.load(pathStored + "/trainDS.pt")
-    val_dataset = torch.load(pathStored + "/valDS.pt")
-    test_dataset = torch.load(pathStored + "/testDS.pt")
-    nbr_labels = count_labels(directoryToProcess)
-    with open(path_weight, "rb") as file:
-        class_weight = pickle.load(file)
-
-    # To not retrain a model when we do test on the model
-    if not os.path.exists("model.pt") and not alexnet:
-        trained_model = tuneHyperparam(train_dataset, val_dataset, lr, batch_size, nbr_labels, nbr_channels, image_size, device, num_epochs)
-        trained_model.to(device)
-        torch.save(trained_model.state_dict(), 'model.pt')
-    else:
-        if not alexnet:
-            trained_model = MyCNN(nbr_labels, nbr_channels, image_size)
-            trained_model.to(device)
-            trained_model.load_state_dict(torch.load('model.pt'))
-        else:
-            # Load the pre-trained AlexNet model
-            trained_model = torchvision.models.alexnet(pretrained=True)
-
-            # Freeze the parameters so that we don't backpropagate through them
-            for param in trained_model.parameters():
-                param.requires_grad = False
-
-            trained_model.classifier[6] = nn.Linear(4096, nbr_labels)
-            trained_model.to(device)
-
-    testModel(trained_model, test_dataset, nbr_labels, batch_size, device, alexnet)
-    """
 

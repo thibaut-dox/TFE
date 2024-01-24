@@ -61,7 +61,7 @@ class MyCNN(nn.Module):
         x = self.fc2(x)
         return x
 
-
+# Function to adapt the normalization depending on which model we are training
 def choose_NN(nn_choice, nbr_channels, image_size, device, old_transform, old_normalize):
     if nn_choice == "mycnn":
         print("Model choice : MyCnn")
